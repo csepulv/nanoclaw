@@ -1,5 +1,6 @@
 import { App, LogLevel } from '@slack/bolt';
 import type { GenericMessageEvent, BotMessageEvent } from '@slack/types';
+import { slackifyMarkdown } from 'slackify-markdown';
 
 import { ASSISTANT_NAME, TRIGGER_PATTERN } from '../config.js';
 import { updateChatName } from '../db.js';
@@ -16,6 +17,47 @@ import {
 // Slack's chat.postMessage API limits text to ~4000 characters per call.
 // Messages exceeding this are split into sequential chunks.
 const MAX_MESSAGE_LENGTH = 4000;
+
+// Slack Block Kit section blocks have a 3000-character limit for mrkdwn text.
+const MAX_BLOCK_TEXT_LENGTH = 3000;
+
+/**
+ * Split text into Slack Block Kit section blocks, respecting the 3000-char limit.
+ * Splits on paragraph boundaries when possible.
+ */
+function textToBlocks(
+  text: string,
+): Array<{ type: 'section'; text: { type: 'mrkdwn'; text: string } }> {
+  const blocks: Array<{
+    type: 'section';
+    text: { type: 'mrkdwn'; text: string };
+  }> = [];
+
+  let remaining = text;
+  while (remaining.length > 0) {
+    if (remaining.length <= MAX_BLOCK_TEXT_LENGTH) {
+      blocks.push({
+        type: 'section',
+        text: { type: 'mrkdwn', text: remaining },
+      });
+      break;
+    }
+
+    // Find a paragraph break near the limit
+    let splitAt = remaining.lastIndexOf('\n\n', MAX_BLOCK_TEXT_LENGTH);
+    if (splitAt <= 0)
+      splitAt = remaining.lastIndexOf('\n', MAX_BLOCK_TEXT_LENGTH);
+    if (splitAt <= 0) splitAt = MAX_BLOCK_TEXT_LENGTH;
+
+    blocks.push({
+      type: 'section',
+      text: { type: 'mrkdwn', text: remaining.slice(0, splitAt) },
+    });
+    remaining = remaining.slice(splitAt).replace(/^\n+/, '');
+  }
+
+  return blocks;
+}
 
 // The message subtypes we process. Bolt delivers all subtypes via app.event('message');
 // we filter to regular messages (GenericMessageEvent, subtype undefined) and bot messages
@@ -94,8 +136,7 @@ export class SlackChannel implements Channel {
       const groups = this.opts.registeredGroups();
       if (!groups[jid]) return;
 
-      const isBotMessage =
-        !!msg.bot_id || msg.user === this.botUserId;
+      const isBotMessage = !!msg.bot_id || msg.user === this.botUserId;
 
       let senderName: string;
       if (isBotMessage) {
@@ -113,7 +154,10 @@ export class SlackChannel implements Channel {
       let content = msg.text;
       if (this.botUserId && !isBotMessage) {
         const mentionPattern = `<@${this.botUserId}>`;
-        if (content.includes(mentionPattern) && !TRIGGER_PATTERN.test(content)) {
+        if (
+          content.includes(mentionPattern) &&
+          !TRIGGER_PATTERN.test(content)
+        ) {
           content = `@${ASSISTANT_NAME} ${content}`;
         }
       }
@@ -142,10 +186,7 @@ export class SlackChannel implements Channel {
       this.botUserId = auth.user_id as string;
       logger.info({ botUserId: this.botUserId }, 'Connected to Slack');
     } catch (err) {
-      logger.warn(
-        { err },
-        'Connected to Slack but failed to get bot user ID',
-      );
+      logger.warn({ err }, 'Connected to Slack but failed to get bot user ID');
     }
 
     this.connected = true;
@@ -170,16 +211,22 @@ export class SlackChannel implements Channel {
     }
 
     try {
-      // Slack limits messages to ~4000 characters; split if needed
-      if (text.length <= MAX_MESSAGE_LENGTH) {
-        await this.app.client.chat.postMessage({ channel: channelId, text });
-      } else {
-        for (let i = 0; i < text.length; i += MAX_MESSAGE_LENGTH) {
-          await this.app.client.chat.postMessage({
-            channel: channelId,
-            text: text.slice(i, i + MAX_MESSAGE_LENGTH),
-          });
-        }
+      const mrkdwn = slackifyMarkdown(text);
+      const blocks = textToBlocks(mrkdwn);
+
+      // Send blocks in batches of 50 (Slack's block limit per message)
+      for (let i = 0; i < blocks.length; i += 50) {
+        const batch = blocks.slice(i, i + 50);
+        // text field is the fallback for notifications / clients that don't render blocks
+        const fallback =
+          batch.length === blocks.length
+            ? mrkdwn.slice(0, MAX_MESSAGE_LENGTH)
+            : mrkdwn.slice(0, MAX_MESSAGE_LENGTH);
+        await this.app.client.chat.postMessage({
+          channel: channelId,
+          text: fallback,
+          blocks: batch,
+        });
       }
       logger.info({ jid, length: text.length }, 'Slack message sent');
     } catch (err) {
@@ -245,9 +292,7 @@ export class SlackChannel implements Channel {
     }
   }
 
-  private async resolveUserName(
-    userId: string,
-  ): Promise<string | undefined> {
+  private async resolveUserName(userId: string): Promise<string | undefined> {
     if (!userId) return undefined;
 
     const cached = this.userNameCache.get(userId);
@@ -275,9 +320,12 @@ export class SlackChannel implements Channel {
       while (this.outgoingQueue.length > 0) {
         const item = this.outgoingQueue.shift()!;
         const channelId = item.jid.replace(/^slack:/, '');
+        const mrkdwn = slackifyMarkdown(item.text);
+        const blocks = textToBlocks(mrkdwn);
         await this.app.client.chat.postMessage({
           channel: channelId,
-          text: item.text,
+          text: mrkdwn.slice(0, MAX_MESSAGE_LENGTH),
+          blocks,
         });
         logger.info(
           { jid: item.jid, length: item.text.length },

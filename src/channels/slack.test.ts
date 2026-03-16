@@ -132,7 +132,9 @@ function currentApp() {
   return appRef.current;
 }
 
-async function triggerMessageEvent(event: ReturnType<typeof createMessageEvent>) {
+async function triggerMessageEvent(
+  event: ReturnType<typeof createMessageEvent>,
+) {
   const handler = currentApp().eventHandlers.get('message');
   if (handler) await handler({ event });
 }
@@ -309,7 +311,10 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      const event = createMessageEvent({ user: 'U_BOT_123', text: 'Self message' });
+      const event = createMessageEvent({
+        user: 'U_BOT_123',
+        text: 'Self message',
+      });
       await triggerMessageEvent(event);
 
       expect(opts.onMessage).toHaveBeenCalledWith(
@@ -391,13 +396,17 @@ describe('SlackChannel', () => {
       await channel.connect();
 
       // First message — API call
-      await triggerMessageEvent(createMessageEvent({ user: 'U_USER_456', text: 'First' }));
+      await triggerMessageEvent(
+        createMessageEvent({ user: 'U_USER_456', text: 'First' }),
+      );
       // Second message — should use cache
-      await triggerMessageEvent(createMessageEvent({
-        user: 'U_USER_456',
-        text: 'Second',
-        ts: '1704067201.000000',
-      }));
+      await triggerMessageEvent(
+        createMessageEvent({
+          user: 'U_USER_456',
+          text: 'Second',
+          ts: '1704067201.000000',
+        }),
+      );
 
       expect(currentApp().client.users.info).toHaveBeenCalledTimes(1);
     });
@@ -407,7 +416,9 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      currentApp().client.users.info.mockRejectedValueOnce(new Error('API error'));
+      currentApp().client.users.info.mockRejectedValueOnce(
+        new Error('API error'),
+      );
 
       const event = createMessageEvent({ user: 'U_UNKNOWN', text: 'Hi' });
       await triggerMessageEvent(event);
@@ -560,17 +571,19 @@ describe('SlackChannel', () => {
   // --- sendMessage ---
 
   describe('sendMessage', () => {
-    it('sends message via Slack client', async () => {
+    it('sends message via Slack client with blocks', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await channel.connect();
 
       await channel.sendMessage('slack:C0123456789', 'Hello');
 
-      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
-        channel: 'C0123456789',
-        text: 'Hello',
-      });
+      const call = currentApp().client.chat.postMessage.mock.calls[0][0];
+      expect(call.channel).toBe('C0123456789');
+      expect(call.blocks).toHaveLength(1);
+      expect(call.blocks[0].type).toBe('section');
+      expect(call.blocks[0].text.type).toBe('mrkdwn');
+      expect(call.blocks[0].text.text).toContain('Hello');
     });
 
     it('strips slack: prefix from JID', async () => {
@@ -580,10 +593,9 @@ describe('SlackChannel', () => {
 
       await channel.sendMessage('slack:D9876543210', 'DM message');
 
-      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
-        channel: 'D9876543210',
-        text: 'DM message',
-      });
+      const call = currentApp().client.chat.postMessage.mock.calls[0][0];
+      expect(call.channel).toBe('D9876543210');
+      expect(call.blocks[0].text.text).toContain('DM message');
     });
 
     it('queues message when disconnected', async () => {
@@ -611,43 +623,38 @@ describe('SlackChannel', () => {
       ).resolves.toBeUndefined();
     });
 
-    it('splits long messages at 4000 character boundary', async () => {
+    it('splits long messages into multiple blocks', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      // Create a message longer than 4000 chars
+      // Create a message longer than 3000 chars (block text limit)
       const longText = 'A'.repeat(4500);
       await channel.sendMessage('slack:C0123456789', longText);
 
-      // Should be split into 2 messages: 4000 + 500
-      expect(currentApp().client.chat.postMessage).toHaveBeenCalledTimes(2);
-      expect(currentApp().client.chat.postMessage).toHaveBeenNthCalledWith(1, {
-        channel: 'C0123456789',
-        text: 'A'.repeat(4000),
-      });
-      expect(currentApp().client.chat.postMessage).toHaveBeenNthCalledWith(2, {
-        channel: 'C0123456789',
-        text: 'A'.repeat(500),
-      });
+      // Should be sent as a single postMessage call with multiple blocks
+      expect(currentApp().client.chat.postMessage).toHaveBeenCalledTimes(1);
+      const call = currentApp().client.chat.postMessage.mock.calls[0][0];
+      expect(call.channel).toBe('C0123456789');
+      expect(call.blocks.length).toBe(2);
+      expect(call.blocks[0].type).toBe('section');
+      expect(call.blocks[0].text.type).toBe('mrkdwn');
     });
 
-    it('sends exactly-4000-char messages as a single message', async () => {
+    it('sends short messages as a single block', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await channel.connect();
 
-      const text = 'B'.repeat(4000);
+      const text = 'B'.repeat(2000);
       await channel.sendMessage('slack:C0123456789', text);
 
       expect(currentApp().client.chat.postMessage).toHaveBeenCalledTimes(1);
-      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
-        channel: 'C0123456789',
-        text,
-      });
+      const call = currentApp().client.chat.postMessage.mock.calls[0][0];
+      expect(call.blocks.length).toBe(1);
     });
 
-    it('splits messages into 3 parts when over 8000 chars', async () => {
+    it('handles very long messages with many blocks', async () => {
       const opts = createTestOpts();
       const channel = new SlackChannel(opts);
       await channel.connect();
@@ -655,8 +662,9 @@ describe('SlackChannel', () => {
       const longText = 'C'.repeat(8500);
       await channel.sendMessage('slack:C0123456789', longText);
 
-      // 4000 + 4000 + 500 = 3 messages
-      expect(currentApp().client.chat.postMessage).toHaveBeenCalledTimes(3);
+      expect(currentApp().client.chat.postMessage).toHaveBeenCalledTimes(1);
+      const call = currentApp().client.chat.postMessage.mock.calls[0][0];
+      expect(call.blocks.length).toBe(3);
     });
 
     it('flushes queued messages on connect', async () => {
@@ -672,14 +680,11 @@ describe('SlackChannel', () => {
       // Connect triggers flush
       await channel.connect();
 
-      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
-        channel: 'C0123456789',
-        text: 'First queued',
-      });
-      expect(currentApp().client.chat.postMessage).toHaveBeenCalledWith({
-        channel: 'C0123456789',
-        text: 'Second queued',
-      });
+      const calls = currentApp().client.chat.postMessage.mock.calls;
+      expect(calls[0][0].channel).toBe('C0123456789');
+      expect(calls[0][0].blocks[0].text.text).toContain('First queued');
+      expect(calls[1][0].channel).toBe('C0123456789');
+      expect(calls[1][0].blocks[0].text.text).toContain('Second queued');
     });
   });
 
@@ -812,17 +817,13 @@ describe('SlackChannel', () => {
       const channel = new SlackChannel(opts);
 
       // First page returns a cursor; second page returns no cursor
-      currentApp().client.conversations.list
-        .mockResolvedValueOnce({
-          channels: [
-            { id: 'C001', name: 'general', is_member: true },
-          ],
+      currentApp()
+        .client.conversations.list.mockResolvedValueOnce({
+          channels: [{ id: 'C001', name: 'general', is_member: true }],
           response_metadata: { next_cursor: 'cursor_page2' },
         })
         .mockResolvedValueOnce({
-          channels: [
-            { id: 'C002', name: 'random', is_member: true },
-          ],
+          channels: [{ id: 'C002', name: 'random', is_member: true }],
           response_metadata: {},
         });
 
@@ -830,7 +831,8 @@ describe('SlackChannel', () => {
 
       // Should have called conversations.list twice (once per page)
       expect(currentApp().client.conversations.list).toHaveBeenCalledTimes(2);
-      expect(currentApp().client.conversations.list).toHaveBeenNthCalledWith(2,
+      expect(currentApp().client.conversations.list).toHaveBeenNthCalledWith(
+        2,
         expect.objectContaining({ cursor: 'cursor_page2' }),
       );
 
