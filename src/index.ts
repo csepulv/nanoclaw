@@ -18,6 +18,7 @@ import {
 import {
   ContainerOutput,
   runContainerAgent,
+  runWarmContainerAgent,
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
@@ -43,6 +44,7 @@ import {
   storeMessage,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
+import { WarmPool, WarmEntry } from './warm-pool.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
@@ -72,6 +74,7 @@ let messageLoopRunning = false;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
+const warmPool = new WarmPool();
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -212,6 +215,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
+  const preSpawned = warmPool.claim(chatJid) ?? undefined;
   const output = await runAgent(group, prompt, chatJid, async (result) => {
     // Streaming output callback — called for each agent result
     if (result.result) {
@@ -237,7 +241,7 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
     if (result.status === 'error') {
       hadError = true;
     }
-  });
+  }, preSpawned);
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
@@ -270,6 +274,7 @@ async function runAgent(
   prompt: string,
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
+  preSpawned?: WarmEntry,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
@@ -311,20 +316,43 @@ async function runAgent(
     : undefined;
 
   try {
-    const output = await runContainerAgent(
-      group,
-      {
-        prompt,
-        sessionId,
-        groupFolder: group.folder,
+    let output: ContainerOutput;
+
+    if (preSpawned) {
+      queue.registerProcess(
         chatJid,
-        isMain,
-        assistantName: ASSISTANT_NAME,
-      },
-      (proc, containerName) =>
-        queue.registerProcess(chatJid, proc, containerName, group.folder),
-      wrappedOnOutput,
-    );
+        preSpawned.process,
+        preSpawned.containerName,
+        group.folder,
+      );
+      output = await runWarmContainerAgent(
+        preSpawned,
+        {
+          prompt,
+          sessionId,
+          groupFolder: group.folder,
+          chatJid,
+          isMain,
+          assistantName: ASSISTANT_NAME,
+        },
+        wrappedOnOutput,
+      );
+    } else {
+      output = await runContainerAgent(
+        group,
+        {
+          prompt,
+          sessionId,
+          groupFolder: group.folder,
+          chatJid,
+          isMain,
+          assistantName: ASSISTANT_NAME,
+        },
+        (proc, containerName) =>
+          queue.registerProcess(chatJid, proc, containerName, group.folder),
+        wrappedOnOutput,
+      );
+    }
 
     if (output.newSessionId) {
       sessions[group.folder] = output.newSessionId;
@@ -343,6 +371,9 @@ async function runAgent(
   } catch (err) {
     logger.error({ group: group.name, err }, 'Agent error');
     return 'error';
+  } finally {
+    // Container has exited — replenish pool regardless of outcome
+    warmPool.replenish(chatJid);
   }
 }
 
@@ -475,6 +506,8 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
+  await warmPool.start(registeredGroups);
+  logger.info({ size: Object.keys(registeredGroups).length }, '[warm-pool] pool started');
   restoreRemoteControl();
 
   // Start credential proxy (containers route API calls through this)
@@ -487,6 +520,7 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     proxyServer.close();
+    warmPool.stop();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);
