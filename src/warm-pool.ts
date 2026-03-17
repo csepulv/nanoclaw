@@ -65,13 +65,13 @@ export class WarmPool {
       return;
     }
 
-    // Pool full — evict LRU entry if groupJid is more recently active
-    const lru = this.findLeastRecentEntry();
-    if (lru && this.isMoreRecentThan(groupJid, lru.groupJid)) {
-      lru.entry.process.kill();
-      this.pool.delete(lru.groupJid);
+    // Pool full — evict the least recently active pool entry if groupJid is more recent
+    const evictable = this.findEvictableEntry(groupJid);
+    if (evictable) {
+      evictable.entry.process.kill();
+      this.pool.delete(evictable.groupJid);
       logger.info(
-        { evicted: lru.groupJid, replacing: groupJid },
+        { evicted: evictable.groupJid, replacing: groupJid },
         '[warm-pool] evicted LRU entry to make room',
       );
       this.spawnWarm(group, groupJid).finally(() =>
@@ -134,7 +134,9 @@ export class WarmPool {
   private startHealthCheck(): void {
     this.healthTimer = setInterval(() => {
       const cutoff = Date.now() - WARM_IDLE_MAX_MS;
-      const stale = [...this.pool.entries()].filter(([, e]) => e.idleSince < cutoff);
+      const stale = [...this.pool.entries()].filter(
+        ([, e]) => e.idleSince < cutoff,
+      );
       for (const [groupJid, entry] of stale) {
         logger.info({ groupJid }, '[warm-pool] replacing stale container');
         entry.process.kill();
@@ -144,38 +146,42 @@ export class WarmPool {
     }, 60_000);
   }
 
-  private findLeastRecentEntry(): {
-    groupJid: string;
-    entry: WarmEntry;
-  } | null {
-    let lruJid: string | null = null;
-    let lruSince = Infinity;
-    for (const [groupJid, entry] of this.pool) {
-      if (entry.idleSince < lruSince) {
-        lruSince = entry.idleSince;
-        lruJid = groupJid;
-      }
-    }
-    if (!lruJid) return null;
-    return { groupJid: lruJid, entry: this.pool.get(lruJid)! };
-  }
-
   /**
-   * Returns true if groupJid has more recent activity than otherJid.
-   * Uses the chats table order from getMostRecentlyActiveGroups.
+   * Returns the pool entry to evict to make room for incomingJid, or null if
+   * incomingJid should not displace any current entry.
+   * Uses DB activity order (most recent first) as the single source of recency,
+   * so both sides of the comparison are consistent.
    */
-  private isMoreRecentThan(groupJid: string, otherJid: string): boolean {
+  private findEvictableEntry(
+    incomingJid: string,
+  ): { groupJid: string; entry: WarmEntry } | null {
     try {
-      const recent = getMostRecentlyActiveGroups(100);
+      // Fetch enough rows to rank all pool entries plus the incoming group
+      const recent = getMostRecentlyActiveGroups(this.pool.size + 2);
       const jids = recent.map((r) => r.jid);
-      const idxA = jids.indexOf(groupJid);
-      const idxB = jids.indexOf(otherJid);
-      if (idxA === -1) return false;
-      if (idxB === -1) return true;
-      return idxA < idxB; // lower index = more recent
+      const incomingIdx = jids.indexOf(incomingJid);
+      if (incomingIdx === -1) return null; // incoming not in DB — don't evict
+
+      let lruJid: string | null = null;
+      let lruIdx = incomingIdx; // only evict if the pool entry is less recent than incoming
+      for (const [groupJid] of this.pool) {
+        const idx = jids.indexOf(groupJid);
+        // Groups absent from DB are treated as least recent (idx → ∞)
+        const effectiveIdx = idx === -1 ? Number.MAX_SAFE_INTEGER : idx;
+        if (effectiveIdx > lruIdx) {
+          lruIdx = effectiveIdx;
+          lruJid = groupJid;
+        }
+      }
+
+      if (!lruJid) return null;
+      return { groupJid: lruJid, entry: this.pool.get(lruJid)! };
     } catch (err) {
-      logger.warn({ groupJid, err }, '[warm-pool] isMoreRecentThan DB query failed, skipping eviction');
-      return false;
+      logger.warn(
+        { incomingJid, err },
+        '[warm-pool] DB query failed during eviction check, skipping',
+      );
+      return null;
     }
   }
 }
