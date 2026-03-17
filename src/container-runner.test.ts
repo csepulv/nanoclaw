@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, vi, afterEach } from 'vitest';
 import { EventEmitter } from 'events';
 import { PassThrough } from 'stream';
+import type { ChildProcess } from 'child_process';
 
 // Sentinel markers must match container-runner.ts
 const OUTPUT_START_MARKER = '---NANOCLAW_OUTPUT_START---';
@@ -86,7 +87,13 @@ vi.mock('child_process', async () => {
   };
 });
 
-import { runContainerAgent, spawnWarmContainer, runWarmContainerAgent, ContainerOutput, WarmContainerHandle } from './container-runner.js';
+import {
+  runContainerAgent,
+  spawnWarmContainer,
+  runWarmContainerAgent,
+  ContainerOutput,
+  WarmContainerHandle,
+} from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
 
 const testGroup: RegisteredGroup = {
@@ -242,7 +249,7 @@ describe('runWarmContainerAgent', () => {
 
   it('writes input JSON to stdin and streams output', async () => {
     const handle: WarmContainerHandle = {
-      process: fakeProc,
+      process: fakeProc as unknown as ChildProcess,
       containerName: 'nanoclaw-warm-test',
       group: testGroup,
     };
@@ -272,7 +279,7 @@ describe('runWarmContainerAgent', () => {
 
   it('resolves as error when container exits non-zero', async () => {
     const handle: WarmContainerHandle = {
-      process: fakeProc,
+      process: fakeProc as unknown as ChildProcess,
       containerName: 'nanoclaw-warm-test',
       group: testGroup,
     };

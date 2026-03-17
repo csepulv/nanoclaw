@@ -289,7 +289,8 @@ function _spawnContainer(group: RegisteredGroup): SpawnedContainer {
       group: group.name,
       containerName,
       mounts: mounts.map(
-        (m) => `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
+        (m) =>
+          `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
       ),
       containerArgs: containerArgs.join(' '),
     },
@@ -335,7 +336,7 @@ async function _driveContainer(
     let newSessionId: string | undefined;
     let outputChain = Promise.resolve();
 
-    container.stdout.on('data', (data) => {
+    container.stdout!.on('data', (data) => {
       const chunk = data.toString();
 
       // Always accumulate for logging
@@ -387,7 +388,7 @@ async function _driveContainer(
       }
     });
 
-    container.stderr.on('data', (data) => {
+    container.stderr!.on('data', (data) => {
       const chunk = data.toString();
       const lines = chunk.trim().split('\n');
       for (const line of lines) {
@@ -639,9 +640,16 @@ export async function runContainerAgent(
   const startTime = Date.now();
   const { container, containerName, logsDir } = _spawnContainer(group);
   onProcess(container, containerName);
-  container.stdin.write(JSON.stringify(input));
-  container.stdin.end();
-  return _driveContainer(container, containerName, group, logsDir, startTime, onOutput);
+  container.stdin!.write(JSON.stringify(input));
+  container.stdin!.end();
+  return _driveContainer(
+    container,
+    containerName,
+    group,
+    logsDir,
+    startTime,
+    onOutput,
+  );
 }
 
 export interface WarmContainerHandle {
@@ -654,7 +662,9 @@ export interface WarmContainerHandle {
  * Spawns a container with stdin open but not yet written.
  * The container waits for input. Call runWarmContainerAgent to drive it.
  */
-export function spawnWarmContainer(group: RegisteredGroup): WarmContainerHandle {
+export function spawnWarmContainer(
+  group: RegisteredGroup,
+): WarmContainerHandle {
   const { container, containerName } = _spawnContainer(group);
   // stdin intentionally left open — caller writes when a message arrives
   return { process: container, containerName, group };
@@ -674,8 +684,8 @@ export async function runWarmContainerAgent(
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
 
-  warm.process.stdin.write(JSON.stringify(input));
-  warm.process.stdin.end();
+  warm.process.stdin!.write(JSON.stringify(input));
+  warm.process.stdin!.end();
 
   return _driveContainer(
     warm.process,
