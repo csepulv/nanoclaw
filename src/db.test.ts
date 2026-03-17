@@ -6,6 +6,7 @@ import {
   deleteTask,
   getAllChats,
   getAllRegisteredGroups,
+  getMostRecentlyActiveGroups,
   getMessagesSince,
   getNewMessages,
   getTaskById,
@@ -480,5 +481,35 @@ describe('registered group isMain', () => {
     const group = groups['group@g.us'];
     expect(group).toBeDefined();
     expect(group.isMain).toBeUndefined();
+  });
+});
+
+// --- getMostRecentlyActiveGroups ---
+
+describe('getMostRecentlyActiveGroups', () => {
+  it('returns at most limit groups ordered by most recent activity', () => {
+    storeChatMetadata('group-a@g.us', '2024-01-01T00:00:00.000Z', 'A', 'whatsapp', true);
+    storeChatMetadata('group-b@g.us', '2024-01-03T00:00:00.000Z', 'B', 'whatsapp', true);
+    storeChatMetadata('group-c@g.us', '2024-01-02T00:00:00.000Z', 'C', 'whatsapp', true);
+    // DM — should NOT appear
+    storeChatMetadata('user@s.whatsapp.net', '2024-01-04T00:00:00.000Z', 'DM', 'whatsapp', false);
+
+    const result = getMostRecentlyActiveGroups(2);
+
+    expect(result).toHaveLength(2);
+    expect(result[0].jid).toBe('group-b@g.us');
+    expect(result[1].jid).toBe('group-c@g.us');
+  });
+
+  it('returns empty array when no groups exist', () => {
+    const result = getMostRecentlyActiveGroups(5);
+    expect(result).toEqual([]);
+  });
+
+  it('returns fewer than limit when fewer groups exist', () => {
+    storeChatMetadata('only@g.us', '2024-01-01T00:00:00.000Z', 'Only', 'whatsapp', true);
+    const result = getMostRecentlyActiveGroups(5);
+    expect(result).toHaveLength(1);
+    expect(result[0].jid).toBe('only@g.us');
   });
 });
