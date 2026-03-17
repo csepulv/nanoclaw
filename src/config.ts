@@ -57,6 +57,14 @@ export const MAX_CONCURRENT_CONTAINERS = Math.max(
   1,
   parseInt(process.env.MAX_CONCURRENT_CONTAINERS || '5', 10) || 5,
 );
+export const WARM_POOL_SIZE = Math.max(
+  0,
+  parseInt(process.env.WARM_POOL_SIZE ?? '2', 10) || 2,
+);
+export const WARM_IDLE_MAX_MS = parseInt(
+  process.env.WARM_IDLE_MAX_MS ?? String(10 * 60 * 1000),
+  10,
+);
 
 function escapeRegex(str: string): string {
   return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
