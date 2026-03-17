@@ -13,7 +13,9 @@ export class WarmPool {
   private healthTimer: NodeJS.Timeout | null = null;
 
   /** Seed pool from most recently active groups and start health-check timer. */
-  async start(registeredGroups: Record<string, RegisteredGroup>): Promise<void> {
+  async start(
+    registeredGroups: Record<string, RegisteredGroup>,
+  ): Promise<void> {
     this.registeredGroups = registeredGroups;
 
     const recent = getMostRecentlyActiveGroups(WARM_POOL_SIZE);
@@ -87,13 +89,19 @@ export class WarmPool {
       this.healthTimer = null;
     }
     for (const [groupJid, entry] of this.pool) {
-      logger.info({ groupJid }, '[warm-pool] killing warm container on shutdown');
+      logger.info(
+        { groupJid },
+        '[warm-pool] killing warm container on shutdown',
+      );
       entry.process.kill();
     }
     this.pool.clear();
   }
 
-  private async spawnWarm(group: RegisteredGroup, groupJid: string): Promise<void> {
+  private async spawnWarm(
+    group: RegisteredGroup,
+    groupJid: string,
+  ): Promise<void> {
     try {
       const handle = spawnWarmContainer(group);
       const entry: WarmEntry = { ...handle, idleSince: Date.now() };
@@ -101,7 +109,10 @@ export class WarmPool {
       // If container dies before it's claimed, remove from pool and replenish
       handle.process.once('exit', () => {
         if (this.pool.get(groupJid) === entry) {
-          logger.warn({ groupJid }, '[warm-pool] warm container died before claim, replacing');
+          logger.warn(
+            { groupJid },
+            '[warm-pool] warm container died before claim, replacing',
+          );
           this.pool.delete(groupJid);
           this.replenish(groupJid);
         }
@@ -113,25 +124,30 @@ export class WarmPool {
         '[warm-pool] warm container ready',
       );
     } catch (err) {
-      logger.error({ groupJid, err }, '[warm-pool] failed to spawn warm container');
+      logger.error(
+        { groupJid, err },
+        '[warm-pool] failed to spawn warm container',
+      );
     }
   }
 
   private startHealthCheck(): void {
     this.healthTimer = setInterval(() => {
       const cutoff = Date.now() - WARM_IDLE_MAX_MS;
-      for (const [groupJid, entry] of this.pool) {
-        if (entry.idleSince < cutoff) {
-          logger.info({ groupJid }, '[warm-pool] replacing stale container');
-          entry.process.kill();
-          this.pool.delete(groupJid);
-          this.replenish(groupJid);
-        }
+      const stale = [...this.pool.entries()].filter(([, e]) => e.idleSince < cutoff);
+      for (const [groupJid, entry] of stale) {
+        logger.info({ groupJid }, '[warm-pool] replacing stale container');
+        entry.process.kill();
+        this.pool.delete(groupJid);
+        this.replenish(groupJid);
       }
     }, 60_000);
   }
 
-  private findLeastRecentEntry(): { groupJid: string; entry: WarmEntry } | null {
+  private findLeastRecentEntry(): {
+    groupJid: string;
+    entry: WarmEntry;
+  } | null {
     let lruJid: string | null = null;
     let lruSince = Infinity;
     for (const [groupJid, entry] of this.pool) {
@@ -157,7 +173,8 @@ export class WarmPool {
       if (idxA === -1) return false;
       if (idxB === -1) return true;
       return idxA < idxB; // lower index = more recent
-    } catch {
+    } catch (err) {
+      logger.warn({ groupJid, err }, '[warm-pool] isMoreRecentThan DB query failed, skipping eviction');
       return false;
     }
   }
