@@ -86,7 +86,7 @@ vi.mock('child_process', async () => {
   };
 });
 
-import { runContainerAgent, ContainerOutput } from './container-runner.js';
+import { runContainerAgent, spawnWarmContainer, runWarmContainerAgent, ContainerOutput, WarmContainerHandle } from './container-runner.js';
 import type { RegisteredGroup } from './types.js';
 
 const testGroup: RegisteredGroup = {
@@ -206,5 +206,81 @@ describe('container-runner timeout behavior', () => {
     const result = await resultPromise;
     expect(result.status).toBe('success');
     expect(result.newSessionId).toBe('session-456');
+  });
+});
+
+describe('spawnWarmContainer', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('returns a handle without writing stdin', () => {
+    const stdinWriteSpy = vi.spyOn(fakeProc.stdin, 'write');
+    const stdinEndSpy = vi.spyOn(fakeProc.stdin, 'end');
+
+    const handle = spawnWarmContainer(testGroup);
+
+    expect(handle.process).toBe(fakeProc);
+    expect(handle.containerName).toMatch(/^nanoclaw-test-group-/);
+    expect(stdinWriteSpy).not.toHaveBeenCalled();
+    expect(stdinEndSpy).not.toHaveBeenCalled();
+  });
+});
+
+describe('runWarmContainerAgent', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    fakeProc = createFakeProcess();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('writes input JSON to stdin and streams output', async () => {
+    const handle: WarmContainerHandle = {
+      process: fakeProc,
+      containerName: 'nanoclaw-warm-test',
+      group: testGroup,
+    };
+
+    const writtenChunks: string[] = [];
+    fakeProc.stdin.on('data', (chunk) => writtenChunks.push(chunk.toString()));
+
+    const onOutput = vi.fn(async () => {});
+    const resultPromise = runWarmContainerAgent(handle, testInput, onOutput);
+
+    await vi.waitFor(() => expect(writtenChunks.length).toBeGreaterThan(0));
+    const written = JSON.parse(writtenChunks.join(''));
+    expect(written.prompt).toBe(testInput.prompt);
+
+    emitOutputMarker(fakeProc, {
+      status: 'success',
+      result: 'warm response',
+      newSessionId: 'session-warm',
+    });
+    fakeProc.emit('close', 0);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('success');
+    expect(result.newSessionId).toBe('session-warm');
+    expect(onOutput).toHaveBeenCalledOnce();
+  });
+
+  it('resolves as error when container exits non-zero', async () => {
+    const handle: WarmContainerHandle = {
+      process: fakeProc,
+      containerName: 'nanoclaw-warm-test',
+      group: testGroup,
+    };
+
+    const resultPromise = runWarmContainerAgent(handle, testInput);
+    fakeProc.emit('close', 1);
+
+    const result = await resultPromise;
+    expect(result.status).toBe('error');
   });
 });

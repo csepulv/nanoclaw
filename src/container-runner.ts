@@ -264,18 +264,22 @@ function buildContainerArgs(
   return args;
 }
 
-export async function runContainerAgent(
-  group: RegisteredGroup,
-  input: ContainerInput,
-  onProcess: (proc: ChildProcess, containerName: string) => void,
-  onOutput?: (output: ContainerOutput) => Promise<void>,
-): Promise<ContainerOutput> {
-  const startTime = Date.now();
+interface SpawnedContainer {
+  container: ChildProcess;
+  containerName: string;
+  logsDir: string;
+}
 
+/**
+ * Sets up mounts, names, creates logsDir, spawns the container process.
+ * Does NOT write stdin — that is left to the caller.
+ */
+function _spawnContainer(group: RegisteredGroup): SpawnedContainer {
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
-  const mounts = buildVolumeMounts(group, input.isMain);
+  const isMain = group.isMain === true;
+  const mounts = buildVolumeMounts(group, isMain);
   const safeName = group.folder.replace(/[^a-zA-Z0-9-]/g, '-');
   const containerName = `nanoclaw-${safeName}-${Date.now()}`;
   const containerArgs = buildContainerArgs(mounts, containerName);
@@ -285,8 +289,7 @@ export async function runContainerAgent(
       group: group.name,
       containerName,
       mounts: mounts.map(
-        (m) =>
-          `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
+        (m) => `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
       ),
       containerArgs: containerArgs.join(' '),
     },
@@ -294,32 +297,38 @@ export async function runContainerAgent(
   );
 
   logger.info(
-    {
-      group: group.name,
-      containerName,
-      mountCount: mounts.length,
-      isMain: input.isMain,
-    },
+    { group: group.name, containerName, mountCount: mounts.length, isMain },
     'Spawning container agent',
   );
 
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
 
+  const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
+    stdio: ['pipe', 'pipe', 'pipe'],
+  });
+
+  return { container, containerName, logsDir };
+}
+
+/**
+ * Attaches stdout/stderr handlers, timeout, and close event to a container
+ * whose stdin has already been written and closed by the caller.
+ * Returns a Promise<ContainerOutput> that resolves when the container exits.
+ */
+async function _driveContainer(
+  container: ChildProcess,
+  containerName: string,
+  group: RegisteredGroup,
+  logsDir: string,
+  startTime: number,
+  onOutput?: (output: ContainerOutput) => Promise<void>,
+): Promise<ContainerOutput> {
   return new Promise((resolve) => {
-    const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-
-    onProcess(container, containerName);
-
     let stdout = '';
     let stderr = '';
     let stdoutTruncated = false;
     let stderrTruncated = false;
-
-    container.stdin.write(JSON.stringify(input));
-    container.stdin.end();
 
     // Streaming output: parse OUTPUT_START/END marker pairs as they arrive
     let parseBuffer = '';
@@ -492,7 +501,6 @@ export async function runContainerAgent(
         `=== Container Run Log ===`,
         `Timestamp: ${new Date().toISOString()}`,
         `Group: ${group.name}`,
-        `IsMain: ${input.isMain}`,
         `Duration: ${duration}ms`,
         `Exit Code: ${code}`,
         `Stdout Truncated: ${stdoutTruncated}`,
@@ -504,20 +512,6 @@ export async function runContainerAgent(
 
       if (isVerbose || isError) {
         logLines.push(
-          `=== Input ===`,
-          JSON.stringify(input, null, 2),
-          ``,
-          `=== Container Args ===`,
-          containerArgs.join(' '),
-          ``,
-          `=== Mounts ===`,
-          mounts
-            .map(
-              (m) =>
-                `${m.hostPath} -> ${m.containerPath}${m.readonly ? ' (ro)' : ''}`,
-            )
-            .join('\n'),
-          ``,
           `=== Stderr${stderrTruncated ? ' (TRUNCATED)' : ''} ===`,
           stderr,
           ``,
@@ -526,14 +520,8 @@ export async function runContainerAgent(
         );
       } else {
         logLines.push(
-          `=== Input Summary ===`,
-          `Prompt length: ${input.prompt.length} chars`,
-          `Session ID: ${input.sessionId || 'new'}`,
-          ``,
-          `=== Mounts ===`,
-          mounts
-            .map((m) => `${m.containerPath}${m.readonly ? ' (ro)' : ''}`)
-            .join('\n'),
+          `=== Stdout${stdoutTruncated ? ' (TRUNCATED)' : ''} ===`,
+          stdout,
           ``,
         );
       }
@@ -640,6 +628,63 @@ export async function runContainerAgent(
       });
     });
   });
+}
+
+export async function runContainerAgent(
+  group: RegisteredGroup,
+  input: ContainerInput,
+  onProcess: (proc: ChildProcess, containerName: string) => void,
+  onOutput?: (output: ContainerOutput) => Promise<void>,
+): Promise<ContainerOutput> {
+  const startTime = Date.now();
+  const { container, containerName, logsDir } = _spawnContainer(group);
+  onProcess(container, containerName);
+  container.stdin.write(JSON.stringify(input));
+  container.stdin.end();
+  return _driveContainer(container, containerName, group, logsDir, startTime, onOutput);
+}
+
+export interface WarmContainerHandle {
+  process: ChildProcess;
+  containerName: string;
+  group: RegisteredGroup;
+}
+
+/**
+ * Spawns a container with stdin open but not yet written.
+ * The container waits for input. Call runWarmContainerAgent to drive it.
+ */
+export function spawnWarmContainer(group: RegisteredGroup): WarmContainerHandle {
+  const { container, containerName } = _spawnContainer(group);
+  // stdin intentionally left open — caller writes when a message arrives
+  return { process: container, containerName, group };
+}
+
+/**
+ * Drives an already-spawned warm container: writes input to stdin,
+ * then streams output identically to runContainerAgent.
+ */
+export async function runWarmContainerAgent(
+  warm: WarmContainerHandle,
+  input: ContainerInput,
+  onOutput?: (output: ContainerOutput) => Promise<void>,
+): Promise<ContainerOutput> {
+  const startTime = Date.now();
+  const groupDir = resolveGroupFolderPath(warm.group.folder);
+  const logsDir = path.join(groupDir, 'logs');
+  fs.mkdirSync(logsDir, { recursive: true });
+
+  warm.process.stdin.write(JSON.stringify(input));
+  warm.process.stdin.end();
+
+  return _driveContainer(
+    warm.process,
+    warm.containerName,
+    warm.group,
+    logsDir,
+    startTime,
+    onOutput,
+  );
 }
 
 export function writeTasksSnapshot(
