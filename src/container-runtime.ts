@@ -13,26 +13,48 @@ export const CONTAINER_RUNTIME_BIN = 'container';
 
 /**
  * Hostname/IP containers use to reach the host machine.
- * Apple Container (macOS): host is at the bridge100 gateway IP (192.168.64.1).
+ * Apple Container (macOS): query `container network ls` for the default gateway IP.
  * Docker Desktop (macOS/WSL): host.docker.internal resolves automatically.
  * Docker (Linux): host.docker.internal added via --add-host.
  */
 export const CONTAINER_HOST_GATEWAY = detectHostGateway();
 
 function detectHostGateway(): string {
-  // Apple Container: containers reach the host via the bridge100 interface IP
-  const ifaces = os.networkInterfaces();
-  const bridge = ifaces['bridge100'];
-  if (bridge) {
-    const ipv4 = bridge.find((a) => a.family === 'IPv4');
-    if (ipv4) return ipv4.address;
+  if (process.env.CONTAINER_HOST_GATEWAY) return process.env.CONTAINER_HOST_GATEWAY;
+
+  // Apple Container: query the runtime for the default network's gateway IP
+  if (CONTAINER_RUNTIME_BIN === 'container') {
+    try {
+      const output = execSync('container network ls --format json', {
+        stdio: ['pipe', 'pipe', 'pipe'],
+        encoding: 'utf-8',
+        timeout: 5000,
+      });
+      const networks: {
+        id: string;
+        status?: { ipv4Gateway?: string };
+      }[] = JSON.parse(output || '[]');
+      const defaultNet = networks.find((n) => n.id === 'default');
+      if (defaultNet?.status?.ipv4Gateway) {
+        logger.debug(
+          { gateway: defaultNet.status.ipv4Gateway },
+          'Detected Apple Container gateway',
+        );
+        return defaultNet.status.ipv4Gateway;
+      }
+    } catch (err) {
+      logger.warn({ err }, 'Failed to detect Apple Container gateway, using fallback');
+    }
+    return '192.168.64.1';
   }
+
   return 'host.docker.internal';
 }
 
 /**
  * Address the credential proxy binds to.
- * Apple Container (macOS): bind to bridge100 IP so containers on the virtual network can reach it.
+ * Apple Container (macOS): bind to 0.0.0.0 — the bridge100 interface may not
+ *   exist at module load time, so we listen on all interfaces.
  * Docker Desktop (macOS): 127.0.0.1 — the VM routes host.docker.internal to loopback.
  * Docker (Linux): bind to the docker0 bridge IP so only containers can reach it.
  */
@@ -40,13 +62,8 @@ export const PROXY_BIND_HOST =
   process.env.CREDENTIAL_PROXY_HOST || detectProxyBindHost();
 
 function detectProxyBindHost(): string {
-  // Apple Container: bind to the bridge interface so containers can connect
-  const ifaces = os.networkInterfaces();
-  const bridge = ifaces['bridge100'];
-  if (bridge) {
-    const ipv4 = bridge.find((a) => a.family === 'IPv4');
-    if (ipv4) return ipv4.address;
-  }
+  // Apple Container: bind all interfaces since bridge100 is created dynamically
+  if (CONTAINER_RUNTIME_BIN === 'container') return '0.0.0.0';
 
   if (os.platform() === 'darwin') return '127.0.0.1';
 
@@ -55,6 +72,7 @@ function detectProxyBindHost(): string {
   if (fs.existsSync('/proc/sys/fs/binfmt_misc/WSLInterop')) return '127.0.0.1';
 
   // Bare-metal Linux: bind to the docker0 bridge IP instead of 0.0.0.0
+  const ifaces = os.networkInterfaces();
   const docker0 = ifaces['docker0'];
   if (docker0) {
     const ipv4 = docker0.find((a) => a.family === 'IPv4');
