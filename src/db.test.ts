@@ -482,4 +482,3 @@ describe('registered group isMain', () => {
     expect(group.isMain).toBeUndefined();
   });
 });
-

@@ -317,7 +317,6 @@ export async function runContainerAgent(
   container.stdin!.write(JSON.stringify(input));
   container.stdin!.end();
 
-
   return new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
