@@ -131,7 +131,10 @@ export function ensureContainerRuntimeRunning(
       // Not running — try to start it
     }
 
-    logger.info({ attempt, maxRetries: MAX_RETRIES }, 'Starting container runtime...');
+    logger.info(
+      { attempt, maxRetries: MAX_RETRIES },
+      'Starting container runtime...',
+    );
     try {
       execSync(`${CONTAINER_RUNTIME_BIN} system start`, {
         stdio: 'pipe',
@@ -152,7 +155,10 @@ export function ensureContainerRuntimeRunning(
           /* busy-wait — execSync is synchronous context */
         }
       } else {
-        logger.error({ err }, 'Failed to start container runtime after all retries');
+        logger.error(
+          { err },
+          'Failed to start container runtime after all retries',
+        );
         console.error(
           '\n╔════════════════════════════════════════════════════════════════╗',
         );
