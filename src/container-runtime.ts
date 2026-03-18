@@ -11,19 +11,43 @@ import { logger } from './logger.js';
 /** The container runtime binary name. */
 export const CONTAINER_RUNTIME_BIN = 'container';
 
-/** Hostname containers use to reach the host machine. */
-export const CONTAINER_HOST_GATEWAY = 'host.docker.internal';
+/**
+ * Hostname/IP containers use to reach the host machine.
+ * Apple Container (macOS): host is at the bridge100 gateway IP (192.168.64.1).
+ * Docker Desktop (macOS/WSL): host.docker.internal resolves automatically.
+ * Docker (Linux): host.docker.internal added via --add-host.
+ */
+export const CONTAINER_HOST_GATEWAY = detectHostGateway();
+
+function detectHostGateway(): string {
+  // Apple Container: containers reach the host via the bridge100 interface IP
+  const ifaces = os.networkInterfaces();
+  const bridge = ifaces['bridge100'];
+  if (bridge) {
+    const ipv4 = bridge.find((a) => a.family === 'IPv4');
+    if (ipv4) return ipv4.address;
+  }
+  return 'host.docker.internal';
+}
 
 /**
  * Address the credential proxy binds to.
+ * Apple Container (macOS): bind to bridge100 IP so containers on the virtual network can reach it.
  * Docker Desktop (macOS): 127.0.0.1 — the VM routes host.docker.internal to loopback.
- * Docker (Linux): bind to the docker0 bridge IP so only containers can reach it,
- *   falling back to 0.0.0.0 if the interface isn't found.
+ * Docker (Linux): bind to the docker0 bridge IP so only containers can reach it.
  */
 export const PROXY_BIND_HOST =
   process.env.CREDENTIAL_PROXY_HOST || detectProxyBindHost();
 
 function detectProxyBindHost(): string {
+  // Apple Container: bind to the bridge interface so containers can connect
+  const ifaces = os.networkInterfaces();
+  const bridge = ifaces['bridge100'];
+  if (bridge) {
+    const ipv4 = bridge.find((a) => a.family === 'IPv4');
+    if (ipv4) return ipv4.address;
+  }
+
   if (os.platform() === 'darwin') return '127.0.0.1';
 
   // WSL uses Docker Desktop (same VM routing as macOS) — loopback is correct.
@@ -31,7 +55,6 @@ function detectProxyBindHost(): string {
   if (fs.existsSync('/proc/sys/fs/binfmt_misc/WSLInterop')) return '127.0.0.1';
 
   // Bare-metal Linux: bind to the docker0 bridge IP instead of 0.0.0.0
-  const ifaces = os.networkInterfaces();
   const docker0 = ifaces['docker0'];
   if (docker0) {
     const ipv4 = docker0.find((a) => a.family === 'IPv4');
