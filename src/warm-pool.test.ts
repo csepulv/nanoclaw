@@ -184,8 +184,16 @@ describe('WarmPool.replenish', () => {
       { jid: 'a@g.us' },
     ]);
     mockSpawnWarm
-      .mockReturnValueOnce({ process: makeProcess(), containerName: 'c3', group: groupB })
-      .mockReturnValueOnce({ process: makeProcess(), containerName: 'c4', group: groupA });
+      .mockReturnValueOnce({
+        process: makeProcess(),
+        containerName: 'c3',
+        group: groupB,
+      })
+      .mockReturnValueOnce({
+        process: makeProcess(),
+        containerName: 'c4',
+        group: groupA,
+      });
     pool.replenish('b@g.us');
     pool.replenish('a@g.us');
     await vi.waitFor(() => expect(mockSpawnWarm).toHaveBeenCalledTimes(2));
@@ -194,13 +202,21 @@ describe('WarmPool.replenish', () => {
 
     // Pool is full (a@g.us, b@g.us). Now replenish c@g.us which is more recent than a@g.us.
     const groupC = makeGroup('group-c');
-    pool.updateRegisteredGroups({ 'a@g.us': groupA, 'b@g.us': groupB, 'c@g.us': groupC });
+    pool.updateRegisteredGroups({
+      'a@g.us': groupA,
+      'b@g.us': groupB,
+      'c@g.us': groupC,
+    });
     vi.mocked(getMostRecentlyActiveGroups).mockReturnValue([
-      { jid: 'c@g.us' },  // most recent
+      { jid: 'c@g.us' }, // most recent
       { jid: 'b@g.us' },
-      { jid: 'a@g.us' },  // LRU — should be evicted
+      { jid: 'a@g.us' }, // LRU — should be evicted
     ]);
-    mockSpawnWarm.mockReturnValue({ process: makeProcess(), containerName: 'c5', group: groupC });
+    mockSpawnWarm.mockReturnValue({
+      process: makeProcess(),
+      containerName: 'c5',
+      group: groupC,
+    });
 
     pool.replenish('c@g.us');
 

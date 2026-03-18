@@ -488,11 +488,35 @@ describe('registered group isMain', () => {
 
 describe('getMostRecentlyActiveGroups', () => {
   it('returns at most limit groups ordered by most recent activity', () => {
-    storeChatMetadata('group-a@g.us', '2024-01-01T00:00:00.000Z', 'A', 'whatsapp', true);
-    storeChatMetadata('group-b@g.us', '2024-01-03T00:00:00.000Z', 'B', 'whatsapp', true);
-    storeChatMetadata('group-c@g.us', '2024-01-02T00:00:00.000Z', 'C', 'whatsapp', true);
+    storeChatMetadata(
+      'group-a@g.us',
+      '2024-01-01T00:00:00.000Z',
+      'A',
+      'whatsapp',
+      true,
+    );
+    storeChatMetadata(
+      'group-b@g.us',
+      '2024-01-03T00:00:00.000Z',
+      'B',
+      'whatsapp',
+      true,
+    );
+    storeChatMetadata(
+      'group-c@g.us',
+      '2024-01-02T00:00:00.000Z',
+      'C',
+      'whatsapp',
+      true,
+    );
     // DM — should NOT appear
-    storeChatMetadata('user@s.whatsapp.net', '2024-01-04T00:00:00.000Z', 'DM', 'whatsapp', false);
+    storeChatMetadata(
+      'user@s.whatsapp.net',
+      '2024-01-04T00:00:00.000Z',
+      'DM',
+      'whatsapp',
+      false,
+    );
 
     const result = getMostRecentlyActiveGroups(2);
 
@@ -507,7 +531,13 @@ describe('getMostRecentlyActiveGroups', () => {
   });
 
   it('returns fewer than limit when fewer groups exist', () => {
-    storeChatMetadata('only@g.us', '2024-01-01T00:00:00.000Z', 'Only', 'whatsapp', true);
+    storeChatMetadata(
+      'only@g.us',
+      '2024-01-01T00:00:00.000Z',
+      'Only',
+      'whatsapp',
+      true,
+    );
     const result = getMostRecentlyActiveGroups(5);
     expect(result).toHaveLength(1);
     expect(result[0].jid).toBe('only@g.us');
