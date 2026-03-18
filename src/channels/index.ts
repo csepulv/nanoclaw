@@ -11,4 +11,7 @@ import './slack.js';
 // telegram
 import './telegram.js';
 
+// web
+import './web.js';
+
 // whatsapp
