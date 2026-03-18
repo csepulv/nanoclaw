@@ -20,7 +20,8 @@ export const CONTAINER_RUNTIME_BIN = 'container';
 export const CONTAINER_HOST_GATEWAY = detectHostGateway();
 
 function detectHostGateway(): string {
-  if (process.env.CONTAINER_HOST_GATEWAY) return process.env.CONTAINER_HOST_GATEWAY;
+  if (process.env.CONTAINER_HOST_GATEWAY)
+    return process.env.CONTAINER_HOST_GATEWAY;
 
   // Apple Container: query the runtime for the default network's gateway IP
   if (CONTAINER_RUNTIME_BIN === 'container') {
@@ -43,7 +44,10 @@ function detectHostGateway(): string {
         return defaultNet.status.ipv4Gateway;
       }
     } catch (err) {
-      logger.warn({ err }, 'Failed to detect Apple Container gateway, using fallback');
+      logger.warn(
+        { err },
+        'Failed to detect Apple Container gateway, using fallback',
+      );
     }
     return '192.168.64.1';
   }
