@@ -39,22 +39,24 @@ export class WebChannel implements Channel {
     const __dirname = path.dirname(fileURLToPath(import.meta.url));
     const htmlPath = path.join(__dirname, 'web-ui.html');
 
-    this.httpServer = createServer((req: IncomingMessage, res: ServerResponse) => {
-      if (req.url === '/' || req.url === '/index.html') {
-        fs.readFile(htmlPath, (err, data) => {
-          if (err) {
-            res.writeHead(500);
-            res.end('Failed to load chat page');
-            return;
-          }
-          res.writeHead(200, { 'Content-Type': 'text/html' });
-          res.end(data);
-        });
-      } else {
-        res.writeHead(404);
-        res.end('Not found');
-      }
-    });
+    this.httpServer = createServer(
+      (req: IncomingMessage, res: ServerResponse) => {
+        if (req.url === '/' || req.url === '/index.html') {
+          fs.readFile(htmlPath, (err, data) => {
+            if (err) {
+              res.writeHead(500);
+              res.end('Failed to load chat page');
+              return;
+            }
+            res.writeHead(200, { 'Content-Type': 'text/html' });
+            res.end(data);
+          });
+        } else {
+          res.writeHead(404);
+          res.end('Not found');
+        }
+      },
+    );
 
     this.wss = new WebSocketServer({ server: this.httpServer, path: '/ws' });
 
@@ -167,7 +169,13 @@ export class WebChannel implements Channel {
       throw new Error('Web channel requires registerGroup in ChannelOpts');
     }
     this.opts.registerGroup(WEB_JID, group);
-    this.opts.onChatMetadata(WEB_JID, new Date().toISOString(), 'Web Chat', 'web', false);
+    this.opts.onChatMetadata(
+      WEB_JID,
+      new Date().toISOString(),
+      'Web Chat',
+      'web',
+      false,
+    );
     logger.info('Web UI: auto-registered web:chat group');
   }
 
