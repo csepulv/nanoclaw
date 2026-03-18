@@ -228,6 +228,10 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
       }
       // Only reset idle timer on actual results, not session-update markers (result: null)
       resetIdleTimer();
+    } else {
+      // Null-result marker = agent is still working (tool call in progress).
+      // Refresh typing indicator so channels like Telegram keep showing it.
+      channel.setTyping?.(chatJid, true)?.catch(() => {});
     }
 
     if (result.status === 'success') {

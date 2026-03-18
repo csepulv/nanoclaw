@@ -435,6 +435,9 @@ async function runQuery(
 
     if (message.type === 'assistant' && 'uuid' in message) {
       lastAssistantUuid = (message as { uuid: string }).uuid;
+      // Signal the host on each tool-use turn so it can refresh typing indicators.
+      // result: null tells the host "still working" without triggering a user-facing message.
+      writeOutput({ status: 'success', result: null, newSessionId });
     }
 
     if (message.type === 'system' && message.subtype === 'init') {
