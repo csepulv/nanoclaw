@@ -236,21 +236,6 @@ export function getAllChats(): ChatInfo[] {
 }
 
 /**
- * Get JIDs of the N most recently active groups.
- * Used to seed the warm container pool on startup.
- */
-export function getMostRecentlyActiveGroups(limit: number): { jid: string }[] {
-  return db
-    .prepare(
-      `SELECT jid FROM chats
-       WHERE is_group = 1 AND jid != '__group_sync__'
-       ORDER BY last_message_time DESC
-       LIMIT ?`,
-    )
-    .all(limit) as { jid: string }[];
-}
-
-/**
  * Get timestamp of last group metadata sync.
  */
 export function getLastGroupSync(): string | null {

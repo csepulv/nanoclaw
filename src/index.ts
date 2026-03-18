@@ -18,7 +18,6 @@ import {
 import {
   ContainerOutput,
   runContainerAgent,
-  runWarmContainerAgent,
   writeGroupsSnapshot,
   writeTasksSnapshot,
 } from './container-runner.js';
@@ -44,7 +43,6 @@ import {
   storeMessage,
 } from './db.js';
 import { GroupQueue } from './group-queue.js';
-import { WarmPool, WarmEntry } from './warm-pool.js';
 import { resolveGroupFolderPath } from './group-folder.js';
 import { startIpcWatcher } from './ipc.js';
 import { findChannel, formatMessages, formatOutbound } from './router.js';
@@ -74,7 +72,6 @@ let messageLoopRunning = false;
 
 const channels: Channel[] = [];
 const queue = new GroupQueue();
-const warmPool = new WarmPool();
 
 function loadState(): void {
   lastTimestamp = getRouterState('last_timestamp') || '';
@@ -112,7 +109,6 @@ function registerGroup(jid: string, group: RegisteredGroup): void {
 
   registeredGroups[jid] = group;
   setRegisteredGroup(jid, group);
-  warmPool.updateRegisteredGroups(registeredGroups);
 
   // Create group folder
   fs.mkdirSync(path.join(groupDir, 'logs'), { recursive: true });
@@ -216,42 +212,32 @@ async function processGroupMessages(chatJid: string): Promise<boolean> {
   let hadError = false;
   let outputSentToUser = false;
 
-  const preSpawned = warmPool.claim(chatJid) ?? undefined;
-  const output = await runAgent(
-    group,
-    prompt,
-    chatJid,
-    async (result) => {
-      // Streaming output callback — called for each agent result
-      if (result.result) {
-        const raw =
-          typeof result.result === 'string'
-            ? result.result
-            : JSON.stringify(result.result);
-        // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
-        const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
-        logger.info(
-          { group: group.name },
-          `Agent output: ${raw.slice(0, 200)}`,
-        );
-        if (text) {
-          await channel.sendMessage(chatJid, text);
-          outputSentToUser = true;
-        }
-        // Only reset idle timer on actual results, not session-update markers (result: null)
-        resetIdleTimer();
+  const output = await runAgent(group, prompt, chatJid, async (result) => {
+    // Streaming output callback — called for each agent result
+    if (result.result) {
+      const raw =
+        typeof result.result === 'string'
+          ? result.result
+          : JSON.stringify(result.result);
+      // Strip <internal>...</internal> blocks — agent uses these for internal reasoning
+      const text = raw.replace(/<internal>[\s\S]*?<\/internal>/g, '').trim();
+      logger.info({ group: group.name }, `Agent output: ${raw.slice(0, 200)}`);
+      if (text) {
+        await channel.sendMessage(chatJid, text);
+        outputSentToUser = true;
       }
+      // Only reset idle timer on actual results, not session-update markers (result: null)
+      resetIdleTimer();
+    }
 
-      if (result.status === 'success') {
-        queue.notifyIdle(chatJid);
-      }
+    if (result.status === 'success') {
+      queue.notifyIdle(chatJid);
+    }
 
-      if (result.status === 'error') {
-        hadError = true;
-      }
-    },
-    preSpawned,
-  );
+    if (result.status === 'error') {
+      hadError = true;
+    }
+  });
 
   await channel.setTyping?.(chatJid, false);
   if (idleTimer) clearTimeout(idleTimer);
@@ -284,7 +270,6 @@ async function runAgent(
   prompt: string,
   chatJid: string,
   onOutput?: (output: ContainerOutput) => Promise<void>,
-  preSpawned?: WarmEntry,
 ): Promise<'success' | 'error'> {
   const isMain = group.isMain === true;
   const sessionId = sessions[group.folder];
@@ -326,43 +311,20 @@ async function runAgent(
     : undefined;
 
   try {
-    let output: ContainerOutput;
-
-    if (preSpawned) {
-      queue.registerProcess(
+    const output = await runContainerAgent(
+      group,
+      {
+        prompt,
+        sessionId,
+        groupFolder: group.folder,
         chatJid,
-        preSpawned.process,
-        preSpawned.containerName,
-        group.folder,
-      );
-      output = await runWarmContainerAgent(
-        preSpawned,
-        {
-          prompt,
-          sessionId,
-          groupFolder: group.folder,
-          chatJid,
-          isMain,
-          assistantName: ASSISTANT_NAME,
-        },
-        wrappedOnOutput,
-      );
-    } else {
-      output = await runContainerAgent(
-        group,
-        {
-          prompt,
-          sessionId,
-          groupFolder: group.folder,
-          chatJid,
-          isMain,
-          assistantName: ASSISTANT_NAME,
-        },
-        (proc, containerName) =>
-          queue.registerProcess(chatJid, proc, containerName, group.folder),
-        wrappedOnOutput,
-      );
-    }
+        isMain,
+        assistantName: ASSISTANT_NAME,
+      },
+      (proc, containerName) =>
+        queue.registerProcess(chatJid, proc, containerName, group.folder),
+      wrappedOnOutput,
+    );
 
     if (output.newSessionId) {
       sessions[group.folder] = output.newSessionId;
@@ -381,9 +343,6 @@ async function runAgent(
   } catch (err) {
     logger.error({ group: group.name, err }, 'Agent error');
     return 'error';
-  } finally {
-    // Container has exited — replenish pool regardless of outcome
-    warmPool.replenish(chatJid);
   }
 }
 
@@ -516,11 +475,6 @@ async function main(): Promise<void> {
   initDatabase();
   logger.info('Database initialized');
   loadState();
-  await warmPool.start(registeredGroups);
-  logger.info(
-    { size: Object.keys(registeredGroups).length },
-    '[warm-pool] pool started',
-  );
   restoreRemoteControl();
 
   // Start credential proxy (containers route API calls through this)
@@ -533,7 +487,6 @@ async function main(): Promise<void> {
   const shutdown = async (signal: string) => {
     logger.info({ signal }, 'Shutdown signal received');
     proxyServer.close();
-    warmPool.stop();
     await queue.shutdown(10000);
     for (const ch of channels) await ch.disconnect();
     process.exit(0);

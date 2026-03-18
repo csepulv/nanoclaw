@@ -272,17 +272,12 @@ function buildContainerArgs(
   return args;
 }
 
-interface SpawnedContainer {
-  container: ChildProcess;
-  containerName: string;
-  logsDir: string;
-}
-
-/**
- * Sets up mounts, names, creates logsDir, spawns the container process.
- * Does NOT write stdin — that is left to the caller.
- */
-function _spawnContainer(group: RegisteredGroup): SpawnedContainer {
+export async function runContainerAgent(
+  group: RegisteredGroup,
+  input: ContainerInput,
+  onProcess: (proc: ChildProcess, containerName: string) => void,
+  onOutput?: (output: ContainerOutput) => Promise<void>,
+): Promise<ContainerOutput> {
   const groupDir = resolveGroupFolderPath(group.folder);
   fs.mkdirSync(groupDir, { recursive: true });
 
@@ -313,26 +308,16 @@ function _spawnContainer(group: RegisteredGroup): SpawnedContainer {
   const logsDir = path.join(groupDir, 'logs');
   fs.mkdirSync(logsDir, { recursive: true });
 
+  const startTime = Date.now();
   const container = spawn(CONTAINER_RUNTIME_BIN, containerArgs, {
     stdio: ['pipe', 'pipe', 'pipe'],
   });
 
-  return { container, containerName, logsDir };
-}
+  onProcess(container, containerName);
+  container.stdin!.write(JSON.stringify(input));
+  container.stdin!.end();
 
-/**
- * Attaches stdout/stderr handlers, timeout, and close event to a container
- * whose stdin has already been written and closed by the caller.
- * Returns a Promise<ContainerOutput> that resolves when the container exits.
- */
-async function _driveContainer(
-  container: ChildProcess,
-  containerName: string,
-  group: RegisteredGroup,
-  logsDir: string,
-  startTime: number,
-  onOutput?: (output: ContainerOutput) => Promise<void>,
-): Promise<ContainerOutput> {
+
   return new Promise((resolve) => {
     let stdout = '';
     let stderr = '';
@@ -637,72 +622,6 @@ async function _driveContainer(
       });
     });
   });
-}
-
-export async function runContainerAgent(
-  group: RegisteredGroup,
-  input: ContainerInput,
-  onProcess: (proc: ChildProcess, containerName: string) => void,
-  onOutput?: (output: ContainerOutput) => Promise<void>,
-): Promise<ContainerOutput> {
-  const startTime = Date.now();
-  const { container, containerName, logsDir } = _spawnContainer(group);
-  onProcess(container, containerName);
-  container.stdin!.write(JSON.stringify(input));
-  container.stdin!.end();
-  return _driveContainer(
-    container,
-    containerName,
-    group,
-    logsDir,
-    startTime,
-    onOutput,
-  );
-}
-
-export interface WarmContainerHandle {
-  process: ChildProcess;
-  containerName: string;
-  group: RegisteredGroup;
-}
-
-/**
- * Spawns a container with stdin open but not yet written.
- * The container waits for input. Call runWarmContainerAgent to drive it.
- */
-export function spawnWarmContainer(
-  group: RegisteredGroup,
-): WarmContainerHandle {
-  const { container, containerName } = _spawnContainer(group);
-  // stdin intentionally left open — caller writes when a message arrives
-  return { process: container, containerName, group };
-}
-
-/**
- * Drives an already-spawned warm container: writes input to stdin,
- * then streams output identically to runContainerAgent.
- */
-export async function runWarmContainerAgent(
-  warm: WarmContainerHandle,
-  input: ContainerInput,
-  onOutput?: (output: ContainerOutput) => Promise<void>,
-): Promise<ContainerOutput> {
-  const startTime = Date.now();
-  const groupDir = resolveGroupFolderPath(warm.group.folder);
-  const logsDir = path.join(groupDir, 'logs');
-  fs.mkdirSync(logsDir, { recursive: true });
-
-  warm.process.stdin!.write(JSON.stringify(input));
-  warm.process.stdin!.end();
-
-  return _driveContainer(
-    warm.process,
-    warm.containerName,
-    warm.group,
-    logsDir,
-    startTime,
-    onOutput,
-  );
 }
 
 export function writeTasksSnapshot(
