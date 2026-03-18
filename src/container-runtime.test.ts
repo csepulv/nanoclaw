@@ -68,16 +68,16 @@ describe('ensureContainerRuntimeRunning', () => {
   });
 
   it('auto-starts when system status fails', () => {
-    // First call (system status) fails
+    // First call (system status) fails, then start succeeds, then verify status succeeds
     mockExecSync.mockImplementationOnce(() => {
       throw new Error('not running');
     });
-    // Second call (system start) succeeds
-    mockExecSync.mockReturnValueOnce('');
+    mockExecSync.mockReturnValueOnce(''); // system start
+    mockExecSync.mockReturnValueOnce(''); // verify status
 
     ensureContainerRuntimeRunning();
 
-    expect(mockExecSync).toHaveBeenCalledTimes(2);
+    expect(mockExecSync).toHaveBeenCalledTimes(3);
     expect(mockExecSync).toHaveBeenNthCalledWith(
       2,
       `${CONTAINER_RUNTIME_BIN} system start`,
@@ -91,7 +91,8 @@ describe('ensureContainerRuntimeRunning', () => {
       throw new Error('failed');
     });
 
-    expect(() => ensureContainerRuntimeRunning()).toThrow(
+    // Use 1 retry with 0 delay to avoid slow test
+    expect(() => ensureContainerRuntimeRunning(1, 0)).toThrow(
       'Container runtime is required but failed to start',
     );
     expect(logger.error).toHaveBeenCalled();

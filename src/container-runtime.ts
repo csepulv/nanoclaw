@@ -110,46 +110,75 @@ export function stopContainer(name: string): string {
   return `${CONTAINER_RUNTIME_BIN} stop ${name}`;
 }
 
-/** Ensure the container runtime is running, starting it if needed. */
-export function ensureContainerRuntimeRunning(): void {
-  try {
-    execSync(`${CONTAINER_RUNTIME_BIN} system status`, { stdio: 'pipe' });
-    logger.debug('Container runtime already running');
-  } catch {
-    logger.info('Starting container runtime...');
+/**
+ * Ensure the container runtime is running, starting it if needed.
+ * Retries up to maxRetries times with retryDelayMs intervals to handle
+ * boot-time startup where Apple Container services may not be ready immediately.
+ */
+export function ensureContainerRuntimeRunning(
+  maxRetries = 10,
+  retryDelayMs = 5000,
+): void {
+  const MAX_RETRIES = maxRetries;
+  const RETRY_DELAY_MS = retryDelayMs;
+
+  for (let attempt = 1; attempt <= MAX_RETRIES; attempt++) {
+    try {
+      execSync(`${CONTAINER_RUNTIME_BIN} system status`, { stdio: 'pipe' });
+      logger.debug('Container runtime already running');
+      return;
+    } catch {
+      // Not running — try to start it
+    }
+
+    logger.info({ attempt, maxRetries: MAX_RETRIES }, 'Starting container runtime...');
     try {
       execSync(`${CONTAINER_RUNTIME_BIN} system start`, {
         stdio: 'pipe',
         timeout: 30000,
       });
+      // Verify it actually started
+      execSync(`${CONTAINER_RUNTIME_BIN} system status`, { stdio: 'pipe' });
       logger.info('Container runtime started');
+      return;
     } catch (err) {
-      logger.error({ err }, 'Failed to start container runtime');
-      console.error(
-        '\n╔════════════════════════════════════════════════════════════════╗',
-      );
-      console.error(
-        '║  FATAL: Container runtime failed to start                      ║',
-      );
-      console.error(
-        '║                                                                ║',
-      );
-      console.error(
-        '║  Agents cannot run without a container runtime. To fix:        ║',
-      );
-      console.error(
-        '║  1. Ensure Apple Container is installed                        ║',
-      );
-      console.error(
-        '║  2. Run: container system start                                ║',
-      );
-      console.error(
-        '║  3. Restart NanoClaw                                           ║',
-      );
-      console.error(
-        '╚════════════════════════════════════════════════════════════════╝\n',
-      );
-      throw new Error('Container runtime is required but failed to start');
+      if (attempt < MAX_RETRIES) {
+        logger.warn(
+          { attempt, err },
+          `Container runtime not ready, retrying in ${RETRY_DELAY_MS / 1000}s...`,
+        );
+        const waitUntil = Date.now() + RETRY_DELAY_MS;
+        while (Date.now() < waitUntil) {
+          /* busy-wait — execSync is synchronous context */
+        }
+      } else {
+        logger.error({ err }, 'Failed to start container runtime after all retries');
+        console.error(
+          '\n╔════════════════════════════════════════════════════════════════╗',
+        );
+        console.error(
+          '║  FATAL: Container runtime failed to start                      ║',
+        );
+        console.error(
+          '║                                                                ║',
+        );
+        console.error(
+          '║  Agents cannot run without a container runtime. To fix:        ║',
+        );
+        console.error(
+          '║  1. Ensure Apple Container is installed                        ║',
+        );
+        console.error(
+          '║  2. Run: container system start                                ║',
+        );
+        console.error(
+          '║  3. Restart NanoClaw                                           ║',
+        );
+        console.error(
+          '╚════════════════════════════════════════════════════════════════╝\n',
+        );
+        throw new Error('Container runtime is required but failed to start');
+      }
     }
   }
 }
